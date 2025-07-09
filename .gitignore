@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# Model files and checkpoints
+saved_models/
+Compressed_layer/
+unsloth_training_checkpoints/
+unsloth_compiled_cache/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+
+# Large model files
+*.bin
+*.safetensors
+*.pt
+*.pth

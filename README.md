@@ -61,13 +61,11 @@ expanded = interleave_selected_pure_tensor(x, x_compressed, selected_indices)
 ### Core Components
 - `Compress.py`: Main compression implementation with CompressedDecoderLayer and CompressedAttention
 - `decoder_wrapper.py`: ModelWrapperPretrained for integrating compression into pretrained models
-- `model_wrapper.py`: Additional model wrapper utilities
-- `model_wrapper_lora.py`: LoRA integration for parameter-efficient fine-tuning
+
 
 ### Dataset and Training
-- `CreateDataset_streaming.py`: Streaming dataset creation for efficient data handling
-- `Data_preparation.py`: Data preprocessing and preparation utilities
-- `MinimalDatasetCreator.py`: Lightweight dataset creation tools
+- 'create_long_dataset': Creates either Super-NaturalInstructions dataset for training or Longbench v2
+- 'create_dataset_default': used for debugging, creates dataset with short math questions
 - `Model_inference_customLoss.py`: Custom loss functions and inference engine
 - `Unsloth.py`: Main training script using Unsloth for efficient fine-tuning
 
@@ -95,7 +93,7 @@ compressed_model = ModelWrapperPretrained(
     original_model=model,
     layer_idx=[10],  # Compress layer 10
     T_w=100,         # Window size
-    r=0.6,           # Compression ratio
+    r=0.8,           # Compression ratio
     M=100            # Maximum tokens
 )
 

@@ -15,7 +15,7 @@ from transformers.modeling_layers import GradientCheckpointingLayer
 import os
 
 # Environment variable to control debug output
-DEBUG_FLEX_ATTENTION = os.getenv('DEBUG_FLEX_ATTENTION', '1') == '1'
+DEBUG_FLEX_ATTENTION = os.getenv('DEBUG_FLEX_ATTENTION', '0') == '1'
 
 # FlexAttention import
 try:
@@ -317,8 +317,7 @@ class CompressedAttention(nn.Module):
             x_m, xm_cmp, x_w = self.compress_memory(hidden_states, self.T_w, self.r, self.M)
             
             if xm_cmp is None:
-                hidden_states = x_w
-                residuals = hidden_states.clone()
+                residuals = x_w
             else:
                 # Create proper query and key representations for final compression
                 B, T_w_actual, C = x_w.shape

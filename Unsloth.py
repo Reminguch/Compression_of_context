@@ -129,12 +129,12 @@ training_dataset = streaming_dataset
 
 # Enhanced WindowedLossSFTTrainer with streaming optimizations
 trainer = WindowedLossSFTTrainer(
+    T_w=T_w,  # Custom supervision window
     model=my_model,
     tokenizer=tokenizer,
     train_dataset=training_dataset,  
-    T_w=T_w,  # Custom supervision window
-    max_steps=30,
-    learning_rate=2e-3
+    max_steps=1000,
+    learning_rate=2e-4
 )
 
 # Optional: Add data validation
@@ -394,6 +394,3 @@ simple_result = inference_engine.generate_response(
 print("Simple generation result:")
 print(simple_result)
 print("=" * 50)
-
-# Additional tests commented out for now
-# You can uncomment and modify these for more comprehensive testing

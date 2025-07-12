@@ -1,0 +1,13 @@
+[project]
+name = "context-compression"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "datasets>=4.0.0",
+    "pandas>=2.3.1",
+    "torch>=2.7.1",
+    "transformers>=4.53.2",
+    "unsloth>=2025.7.2",
+]

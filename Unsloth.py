@@ -1,3 +1,4 @@
+print(1)
 from unsloth import FastLanguageModel
 import torch
 import torch.nn.functional as F
@@ -10,7 +11,7 @@ import copy
 from dimension_tracker import track_layer_dimensions
 
 # CUDA_VISIBLE_DEVICES=0 /bin/python3.10 /home/ilya/context_compression/Unsloth.py
-print(1)
+
 T_w = 1000000
 r = 0.8
 M = 1000000

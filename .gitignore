@@ -8,6 +8,7 @@ __pycache__/
 venv/
 env/
 ENV/
+.venv/
 
 # Model files and checkpoints
 saved_models/
@@ -32,6 +33,7 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+uv.lock
 
 # Large model files
 *.bin

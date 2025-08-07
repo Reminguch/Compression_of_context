@@ -149,6 +149,35 @@ class Qwen3Compressed(nn.Module):
             # Copy key normalization weights
             if hasattr(original_attention, 'k_norm') and hasattr(compressed_attention, 'k_norm'):
                 compressed_attention.k_norm.weight.data.copy_(original_attention.k_norm.weight.data)
+
+        # ------------------------------------------------------------------
+        # Copy MLP (feed-forward) weights – these are critical for preserving
+        # the original model’s behaviour but were previously omitted.
+        # ------------------------------------------------------------------
+        if hasattr(original_layer, 'mlp') and hasattr(compressed_layer, 'mlp'):
+            orig_mlp = original_layer.mlp
+            comp_mlp = compressed_layer.mlp
+
+            def _safe_copy(attr_name):
+                if hasattr(orig_mlp, attr_name) and hasattr(comp_mlp, attr_name):
+                    orig_lin = getattr(orig_mlp, attr_name)
+                    comp_lin = getattr(comp_mlp, attr_name)
+                    # Weight
+                    comp_lin.weight.data.copy_(orig_lin.weight.data)
+                    # Bias (some implementations use bias=False)
+                    if orig_lin.bias is not None and comp_lin.bias is not None:
+                        comp_lin.bias.data.copy_(orig_lin.bias.data)
+
+            for proj_name in ['gate_proj', 'up_proj', 'down_proj', 'out_proj']:
+                _safe_copy(proj_name)
+
+            # If the MLP uses a norm layer (e.g. RMSNorm) copy its weight too
+            if hasattr(orig_mlp, 'act_fn') and hasattr(comp_mlp, 'act_fn'):
+                pass  # activation functions are stateless – nothing to copy
+
+            if hasattr(orig_mlp, 'norm') and hasattr(comp_mlp, 'norm'):
+                if hasattr(orig_mlp.norm, 'weight') and hasattr(comp_mlp.norm, 'weight'):
+                    comp_mlp.norm.weight.data.copy_(orig_mlp.norm.weight.data)
         
         # Note: The compression-specific components (compress module) will use their initialized weights
     

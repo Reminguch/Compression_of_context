@@ -9,13 +9,26 @@ from typing import Dict
 import copy
 from dimension_tracker import track_layer_dimensions
 
-
-# torch._dynamo.disable()  # Disable compilation completely (for the debugging step)
-
-T_w = 100
+# CUDA_VISIBLE_DEVICES=0 /bin/python3.10 /home/ilya/context_compression/Unsloth.py
+print(1)
+T_w = 1000000
 r = 0.8
-M = 10
-layer_idx = [10]
+M = 1000000
+layer_idx = [20]
+
+# =============================================================
+# Experiment hyper-parameters (adjust here, no code edits below)
+# =============================================================
+SEQ_LEN            = 2048       # Maximum input sequence length during training
+MICRO_BATCH_SIZE   = 4         # Per-device batch size
+GRAD_ACC_STEPS     = 8         # Gradient accumulation → global batch 32
+MAX_STEPS          = 12   # ≈300 M tokens / 15 M parameters guideline
+LEARNING_RATE      = 3e-3      # Peak LR for new compression layer
+WARMUP_RATIO       = 0.05      # 5 % warm-up
+
+# To keep memory manageable you can lower this. 600 k examples at 512 tokens
+# roughly matches the 300 M-token budget suggested by Chinchilla.
+DATASET_MAX_EXAMPLES = 600
 
 fourbit_models = [
     "unsloth/Qwen3-1.7B-unsloth-bnb-4bit", # Qwen 14B 2x faster
@@ -34,7 +47,7 @@ fourbit_models = [
 
 Pretrained_model, tokenizer = FastLanguageModel.from_pretrained(
     model_name = "unsloth/Qwen3-1.7B",
-    max_seq_length = 2048,   # Context length - can be longer, but uses more memory
+    max_seq_length = SEQ_LEN,   # Tunable context length for training
     load_in_4bit = False,     # 4bit uses much less memory
     load_in_8bit = False,    # A bit more accurate, uses 2x memory
     full_finetuning = False, # We have full finetuning now!
@@ -81,7 +94,7 @@ my_model.freeze_pretrained()
 my_model.print_trainable_parameters()
 
 
-layer_parameters(my_model, 10)
+layer_parameters(my_model, 20)
 print("model_created")
 
 # Track layer dimensions during training-style forward pass
@@ -113,7 +126,7 @@ print("=== Dimension Tracking Complete ===\n")
 
 
 creator = DatasetCreator(tokenizer, dataset_name="supernatural", use_streaming=True, seed=42)
-streaming_dataset = creator.create_dataset(max_examples=5000)
+streaming_dataset = creator.create_dataset(max_examples=DATASET_MAX_EXAMPLES)
 # creator = DatasetCreator(tokenizer, chat_percentage=0.2)
 # streaming_dataset = creator.create_dataset(max_length=512)  # Reduce dataset size for faster computations
 
@@ -129,12 +142,16 @@ training_dataset = streaming_dataset
 
 # Enhanced WindowedLossSFTTrainer with streaming optimizations
 trainer = WindowedLossSFTTrainer(
+    T_w=T_w,  # Custom supervision window
     model=my_model,
     tokenizer=tokenizer,
-    train_dataset=training_dataset,  
-    T_w=T_w,  # Custom supervision window
-    max_steps=30,
-    learning_rate=2e-3
+    train_dataset=training_dataset,
+    max_steps=MAX_STEPS,
+    learning_rate=LEARNING_RATE,
+    seq_length=SEQ_LEN,
+    per_device_batch_size=MICRO_BATCH_SIZE,
+    grad_acc_steps=GRAD_ACC_STEPS,
+    warmup_ratio=WARMUP_RATIO,
 )
 
 # Optional: Add data validation
@@ -247,6 +264,11 @@ messages = [
 
 print("\n=== Testing Compressed Model ===")
 
+# -------------------------------------------------
+# Collect outputs for later logging to a file
+# -------------------------------------------------
+test_outputs = []  # Each item is (header, string)
+
 # Test 1: Try without thinking mode completely with anti-cutoff parameters
 print("Test 1: Generation without thinking mode...")
 result1 = inference_engine.generate_response(
@@ -258,6 +280,7 @@ result1 = inference_engine.generate_response(
     enable_thinking=False,
     stream=False
 )
+test_outputs.append(("Test 1", result1))
 
 print("Full generated text:")
 print(result1)
@@ -276,6 +299,7 @@ result1b = inference_engine.generate_response(
     enable_thinking=False,
     stream=False
 )
+test_outputs.append(("Test 1b", result1b))
 
 print("Full generated text (more tokens):")
 print(result1b)
@@ -319,6 +343,7 @@ except Exception as e:
     )
     print("Simple prompt result (via InferenceEngine):")
     print(simple_result)
+test_outputs.append(("Test 2", simple_result))
 print("=" * 50)
 
 # Test 3: Manual chat format without thinking
@@ -355,6 +380,7 @@ except Exception as e:
     )
     print("Manual format result (via InferenceEngine):")
     print(manual_result)
+test_outputs.append(("Test 3", manual_result))
 print("=" * 50)
 
 # Test 4: Check what the chat template actually produces
@@ -366,6 +392,7 @@ template_result = inference_engine.tokenizer.apply_chat_template(
 )
 print("Chat template output:")
 print(repr(template_result))
+test_outputs.append(("Test 4 (Chat Template)", template_result))
 print("=" * 50)
 
 # Test 5: Test streaming with thinking disabled (anti-cutoff parameters)
@@ -380,6 +407,7 @@ result_stream = inference_engine.generate_response(
     stream=True
 )
 print(f"\nStream result: {result_stream}")
+test_outputs.append(("Test 5 (Stream)", str(result_stream)))
 print("=" * 50)
 
 # Test 6: Simple generation method with conservative parameters
@@ -391,9 +419,21 @@ simple_result = inference_engine.generate_response(
     enable_thinking=False,
     stream=False
 )
+test_outputs.append(("Test 6", simple_result))
 print("Simple generation result:")
 print(simple_result)
 print("=" * 50)
 
-# Additional tests commented out for now
-# You can uncomment and modify these for more comprehensive testing
+"""
+After all tests are done, write the collected outputs to a file for later inspection.
+"""
+
+# Write all collected test outputs to a dedicated log file
+log_path = os.path.join(os.path.dirname(__file__), "test_outputs.txt")
+with open(log_path, "w", encoding="utf-8") as f:
+    for header, content in test_outputs:
+        f.write(f"######## {header} ########\n")
+        f.write(str(content))
+        f.write("\n\n")
+
+print(f"Saved detailed test outputs to {log_path}")

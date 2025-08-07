@@ -6,35 +6,73 @@ from trl import SFTTrainer, SFTConfig
 ### Custom Loss function for training ###
 
 class WindowedLossSFTTrainer(SFTTrainer):
-    def __init__(self, T_w, model, tokenizer, train_dataset, max_steps = 30, learning_rate = 2e-4,
-                 **kwargs):
+    def __init__(
+        self,
+        T_w,
+        model,
+        tokenizer,
+        train_dataset,
+        max_steps: int = 12_000,
+        learning_rate: float = 3e-3,
+        seq_length: int = 512,
+        per_device_batch_size: int = 4,
+        grad_acc_steps: int = 8,
+        warmup_ratio: float = 0.05,
+        lr_scheduler_type: str = "cosine",
+        weight_decay: float = 0.01,
+        logging_steps: int = 10,
+        **kwargs,
+    ):
+        """
+        Custom SFT trainer that supervises only the last `T_w` tokens **and** exposes
+        the main hyper-parameters so they can be tuned from the experiment script.
+
+        Args:
+            T_w: supervision window size.
+            model / tokenizer / train_dataset: standard TRL objects.
+            max_steps: total optimisation steps.
+            learning_rate: peak learning rate.
+            seq_length: max sequence length used during training.
+            per_device_batch_size: micro-batch size.
+            grad_acc_steps: gradient accumulation steps.
+            warmup_ratio: fraction of steps used for LR warm-up.
+            lr_scheduler_type: scheduler type (e.g. "cosine").
+            weight_decay: weight decay coefficient.
+            logging_steps: how often to log.
+        """
+
         self.T_w = T_w
-        
-        # Create training arguments with essential configurations only
+
+        warmup_steps = int(max_steps * warmup_ratio)
+
+        # Build the training arguments dynamically so they reflect our experiment setup
         training_args = SFTConfig(
-            per_device_train_batch_size=1,
-            gradient_accumulation_steps=8,
+            dataset_text_field="text",
+            per_device_train_batch_size=per_device_batch_size,
+            gradient_accumulation_steps=grad_acc_steps,
             max_steps=max_steps,
-            learning_rate=learning_rate, 
-            logging_steps=1,
+            learning_rate=learning_rate,
+            warmup_steps=warmup_steps,
+            logging_steps=logging_steps,
             optim="adamw_8bit",
-            lr_scheduler_type="linear",
+            lr_scheduler_type=lr_scheduler_type,
+            bf16=True,
+            weight_decay=weight_decay,
             seed=3407,
             report_to="none",
-            # Essential precision settings
-            bf16=True,
-            # Performance optimizations
+            max_length=seq_length,
+            # Performance tweaks
             dataloader_pin_memory=True,
             dataloader_num_workers=1,
         )
-        
-        # Initialize parent SFTTrainer
+
+        # Initialise the parent class with the newly built arguments
         super().__init__(
             model=model,
             processing_class=tokenizer,
             train_dataset=train_dataset,
             args=training_args,
-            **kwargs
+            **kwargs,
         )
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
@@ -47,8 +85,8 @@ class WindowedLossSFTTrainer(SFTTrainer):
             return_outputs: Whether to return model outputs along with loss
             **kwargs: Additional arguments that might be passed by parent class
         """
-        # Ensure the model is in training mode
-        model.train()
+        # # Ensure the model is in training mode
+        # model.train()
         
         # Ensure inputs are properly formatted tensors
         if not isinstance(inputs, dict):

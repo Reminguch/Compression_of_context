@@ -13,9 +13,10 @@ from transformers.activations import ACT2FN
 from transformers.processing_utils import Unpack
 from transformers.modeling_layers import GradientCheckpointingLayer
 import os
+import traceback  # For detailed exception traces
 
 # Environment variable to control debug output
-DEBUG_FLEX_ATTENTION = os.getenv('DEBUG_FLEX_ATTENTION', '1') == '1'
+DEBUG_FLEX_ATTENTION = os.getenv('DEBUG_FLEX_ATTENTION', '0') == '1'
 
 # FlexAttention import
 try:
@@ -232,8 +233,8 @@ class CompressedAttention(nn.Module):
         self.sliding_window = config.sliding_window if hasattr(config, 'layer_types') and config.layer_types[layer_idx] == "sliding_attention" else None
         self.enable_compression = enable_compression
         
-        # FlexAttention setup
-        self.use_flex_attention = FLEX_ATTENTION_AVAILABLE and getattr(config, 'use_flex_attention', True)
+        # FlexAttention is mandatory when available
+        self.use_flex_attention = FLEX_ATTENTION_AVAILABLE
 
     def create_causal_attention_mask_mod(self, seq_len: int):
         """Create a mask_mod function for causal attention using FlexAttention"""
@@ -309,22 +310,51 @@ class CompressedAttention(nn.Module):
         original_dtype = hidden_states.dtype
         working_dtype = self.q_proj.weight.dtype
         
-        # Convert to working dtype once at the beginning
-        hidden_states = hidden_states.to(dtype=working_dtype)
+        # Cast once only if the tensor is not already in the desired dtype
+        if hidden_states.dtype != working_dtype:
+            hidden_states = hidden_states.to(dtype=working_dtype)
         
         ### Compression of memory part ###
         if self.enable_compression:
             x_m, xm_cmp, x_w = self.compress_memory(hidden_states, self.T_w, self.r, self.M)
             
             if xm_cmp is None:
-                hidden_states = x_w
-                residuals = hidden_states.clone()
+                # When the sequence length is smaller than the configured compression window
+                # (i.e. `T_w >= T`), the current implementation skips compression entirely which
+                # means no **trainable** parameters participate in the forward pass. If all
+                # pretrained weights are frozen, this causes the loss tensor to have
+                # `requires_grad = False` and `loss.backward()` subsequently fails with:
+                #     RuntimeError: element 0 of tensors does not require grad and does not have a grad_fn
+
+                # To ensure the compression layers always stay in the computation graph we
+                # perform a _dummy_ pass through the `MLPCompression` module and inject a
+                # **very small** (1e-6) scaled contribution of its mean activation back into
+                # `hidden_states`. The numerical impact is negligible, yet it guarantees a
+                # non-zero gradient path to the compression parameters even when no real
+                # compression takes place.
+
+                dummy_cmp = self.compress(hidden_states)  # Shape: (B, ⌊T/2⌋, C) or empty when T==1
+
+                if dummy_cmp.numel() > 0:
+                    # Normal (most common) path – create a scalar from the activations.
+                    dummy_scalar = dummy_cmp.mean().to(hidden_states.dtype)
+                else:
+                    # Fallback when the sequence length is exactly 1 and `dummy_cmp` is empty.
+                    # We create a scalar directly from the compression parameters so that they
+                    # are still part of the graph.
+                    dummy_scalar = torch.stack([
+                        p.mean().to(hidden_states.dtype) if p.numel() > 0 else torch.zeros((), device=hidden_states.device, dtype=hidden_states.dtype)
+                        for p in self.compress.parameters()
+                    ]).mean()
+
+                hidden_states = hidden_states + 1e-6 * dummy_scalar  # Broadcasted addition
+
+                residuals = hidden_states
             else:
                 # Create proper query and key representations for final compression
                 B, T_w_actual, C = x_w.shape
                 B_m, T_m, C_m = xm_cmp.shape
                 
-                # No dtype conversion needed - already in working_dtype
                 q_w_proj = self.q_proj(x_w).view(B, self.config.num_attention_heads, T_w_actual, self.head_dim)
                 q_w = self.q_norm(q_w_proj)
                 
@@ -335,16 +365,15 @@ class CompressedAttention(nn.Module):
                 compressed_tokens = FinalCompression(x_m, xm_cmp)
                 
                 hidden_states = torch.cat([compressed_tokens, x_w], dim=1)
-                residuals = hidden_states.clone()
+                residuals = hidden_states  # avoid extra memory copy
         else:
             # Skip compression - use original hidden states directly
-            residuals = hidden_states.clone()
+            residuals = hidden_states
         
         # Update shapes after compression
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
-        # Main attention projections - already in working_dtype
         query_states = self.q_norm(self.q_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
         key_states = self.k_norm(self.k_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
         value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
@@ -363,13 +392,8 @@ class CompressedAttention(nn.Module):
         seq_len_current = hidden_states.shape[1]
         
         if self.enable_compression:
-            # Always create a new attention mask that matches the compressed sequence length
-            compressed_attention_mask = torch.triu(torch.ones(seq_len_current, seq_len_current, device=hidden_states.device, dtype=working_dtype), diagonal=1)
-            compressed_attention_mask = compressed_attention_mask.masked_fill(compressed_attention_mask == 1, -float('inf'))
-            compressed_attention_mask = compressed_attention_mask.unsqueeze(0).unsqueeze(0)  # (1, 1, seq_len_current, seq_len_current)
-            
-            # Update the attention_mask parameter to match compressed sequence length
-            attention_mask = compressed_attention_mask
+            # No explicit mask – rely on FlexAttention / SDPA with is_causal=True
+            attention_mask = None
         else:
             # When compression is disabled, use original attention_mask if provided, 
             # otherwise create a causal mask for the original sequence
@@ -396,100 +420,117 @@ class CompressedAttention(nn.Module):
         attn_weights = None
         
         if self.use_flex_attention:
-            try:
-                # Prepare tensors for FlexAttention - already in working_dtype and contiguous
-                query_states_flex = query_states.contiguous()
-                key_states_flex = key_states.contiguous()
-                value_states_flex = value_states.contiguous()
-                
+            # Prepare tensors for FlexAttention - already in working_dtype and contiguous
+            query_states_flex = query_states.contiguous()
+            key_states_flex = key_states.contiguous()
+            value_states_flex = value_states.contiguous()
 
-                # Handle grouped query attention
-                if self.num_key_value_groups > 1:
-                    key_states_flex = key_states_flex.repeat_interleave(self.num_key_value_groups, dim=1)
-                    value_states_flex = value_states_flex.repeat_interleave(self.num_key_value_groups, dim=1)
+            # Ensure all inputs are bfloat16 for mixed precision training
+            if self.training and self.config.torch_dtype == torch.bfloat16:
+                query_states_flex = query_states_flex.to(torch.bfloat16)
+                key_states_flex = key_states_flex.to(torch.bfloat16)
+                value_states_flex = value_states_flex.to(torch.bfloat16)
 
-                # Create block mask for the current sequence length (compressed or uncompressed)
-                block_mask = self.create_causal_block_mask(seq_len_current, hidden_states.device)
-                
-                # Try FlexAttention with block mask
-                if block_mask is not None:
-                    flex_output = flex_attention(query_states_flex, key_states_flex, value_states_flex, block_mask=block_mask)
-                else:
-                    # Fallback to FlexAttention without block mask
-                    flex_output = flex_attention(query_states_flex, key_states_flex, value_states_flex)
-                
-                # Handle FlexAttention output (might be a tuple)
-                if isinstance(flex_output, tuple):
-                    attn_output = flex_output[0]  # Take the attention output
-                else:
-                    attn_output = flex_output
+            # --- Attempt 1: FlexAttention with Block Mask ---
+            block_mask = self.create_causal_block_mask(seq_len_current, hidden_states.device)
+            if block_mask is not None:
+                try:
+                    debug_print("Attempting FlexAttention with block mask.")
+                    dev = getattr(block_mask, 'device', 'unknown')
+                    debug_print(f"Block mask created with shape {getattr(block_mask, 'shape', 'unknown')} on {dev}")
                     
-                attn_weights = None
-                
-            except Exception as e:
-                # FlexAttention failed, will use standard attention fallback
-                attn_output = None
+                    # Force a graph break before calling FlexAttention to prevent nested compilation
+                    import torch as _t
+                    _t._dynamo.graph_break()
+
+                    flex_output = flex_attention(
+                        query_states_flex,
+                        key_states_flex,
+                        value_states_flex,
+                        block_mask=block_mask,
+                        enable_gqa=(self.num_key_value_groups > 1),
+                    )
+                    attn_output = flex_output[0] if isinstance(flex_output, tuple) else flex_output
+                except Exception as e:
+                    debug_print(f"FlexAttention with block mask FAILED: {e}")
+                    debug_print(traceback.format_exc())
+                    attn_output = None  # Ensure it's None for the next step
+
+            # --- Attempt 2: FlexAttention without Block Mask (if first attempt failed or was skipped) ---
+            if attn_output is None:
+                debug_print("Attempting FlexAttention without block mask.")
+                try:
+                    # Force a graph break before calling FlexAttention
+                    import torch as _t
+                    _t._dynamo.graph_break()
+
+                    flex_output = flex_attention(
+                        query_states_flex,
+                        key_states_flex,
+                        value_states_flex,
+                        block_mask=None,
+                        enable_gqa=(self.num_key_value_groups > 1),
+                    )
+                    attn_output = flex_output[0] if isinstance(flex_output, tuple) else flex_output
+                except Exception as e:
+                    debug_print(f"FlexAttention without block mask FAILED: {e}")
+                    debug_print(traceback.format_exc())
+                    attn_output = None
         
         if attn_output is None:
-            # Fallback to standard attention - already in working_dtype
-            query_states_std = query_states.contiguous()
-            key_states_std = key_states.contiguous()
-            value_states_std = value_states.contiguous()
-            
-            
-            # Handle grouped query attention
-            if self.num_key_value_groups > 1:
-                batch_size, num_kv_heads, seq_len, head_dim = key_states_std.shape
-                target_num_heads = num_kv_heads * self.num_key_value_groups
-                
-                # Expand key/value states to match query heads
-                key_states_std = key_states_std.unsqueeze(2).expand(batch_size, num_kv_heads, self.num_key_value_groups, seq_len, head_dim)
-                key_states_std = key_states_std.reshape(batch_size, target_num_heads, seq_len, head_dim)
-                
-                value_states_std = value_states_std.unsqueeze(2).expand(batch_size, num_kv_heads, self.num_key_value_groups, seq_len, head_dim)
-                value_states_std = value_states_std.reshape(batch_size, target_num_heads, seq_len, head_dim)
-                
-            
-            # Standard scaled dot-product attention
-            scores = torch.matmul(query_states_std, key_states_std.transpose(-2, -1)) * self.scaling
-            
-            # Apply attention mask
-            if attention_mask is not None:
-                if attention_mask.dim() == 2:
-                    attention_mask = attention_mask.unsqueeze(0).unsqueeze(0)
-                elif attention_mask.dim() == 3:
-                    attention_mask = attention_mask.unsqueeze(1)
-                scores = scores + attention_mask.to(dtype=scores.dtype)
-            
-            # Softmax and dropout
-            attn_weights = F.softmax(scores, dim=-1)
-            
-            if self.training and self.attention_dropout > 0:
-                attn_weights = F.dropout(attn_weights, p=self.attention_dropout)
-            
-            # Compute output
-            attn_output = torch.matmul(attn_weights, value_states_std)
+            raise RuntimeError("FlexAttention failed")
 
+            # Fallback to PyTorch scaled_dot_product_attention (FlashAttention/Triton kernels)
+
+            query_states_std = query_states.contiguous()
+            key_states_std   = key_states.contiguous()
+            value_states_std = value_states.contiguous()
+
+            # Expand K/V to match Q heads if Grouped Query Attention is used
+            if self.num_key_value_groups > 1:
+                bsz, kv_heads, slen, hd = key_states_std.shape
+                target_heads = kv_heads * self.num_key_value_groups
+                key_states_std = key_states_std.unsqueeze(2).expand(bsz, kv_heads, self.num_key_value_groups, slen, hd).reshape(bsz, target_heads, slen, hd)
+                value_states_std = value_states_std.unsqueeze(2).expand(bsz, kv_heads, self.num_key_value_groups, slen, hd).reshape(bsz, target_heads, slen, hd)
+
+            attn_output = F.scaled_dot_product_attention(
+                query_states_std,
+                key_states_std,
+                value_states_std,
+                attn_mask=None,
+                dropout_p=self.attention_dropout if self.training else 0.0,
+                is_causal=True,
+            )
+            attn_weights = None
+
+        # Ensure we actually have an attention output tensor at this point
+        if attn_output is None:
+            raise RuntimeError("Both FlexAttention and SDPA fallback failed; cannot continue training.")
+        # Static type hint for linters – attn_output is guaranteed to be a Tensor here
+        assert isinstance(attn_output, torch.Tensor)
             
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         
+        # Ensure attn_output matches the projection layer's dtype before the matmul
+        if attn_output.dtype != self.o_proj.weight.dtype:
+            attn_output = attn_output.to(self.o_proj.weight.dtype)
+
         # Output projection - already in working_dtype
         attn_output = self.o_proj(attn_output)
         
         # Convert back to original dtype only at the end
-        attn_output = attn_output.to(dtype=original_dtype)
-        residuals = residuals.to(dtype=original_dtype)
+        if attn_output.dtype != original_dtype:
+            attn_output = attn_output.to(dtype=original_dtype)
+        
+        if residuals.dtype != original_dtype:
+            residuals = residuals.to(dtype=original_dtype)
         
         # Return appropriate attention mask based on compression state
         if self.enable_compression:
             if self.use_flex_attention:
-                # For FlexAttention, return sequence length info for next layer's block mask creation
-                output_attention_mask = torch.tensor([seq_len_current], 
-                                                   device=hidden_states.device, 
-                                                   dtype=torch.long)
+                output_attention_mask = torch.tensor([seq_len_current], device=hidden_states.device, dtype=torch.long)
             else:
-                # For standard attention, return the actual attention mask
-                output_attention_mask = compressed_attention_mask
+                output_attention_mask = None
         else:
             output_attention_mask = None
             

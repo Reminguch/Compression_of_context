@@ -1,3 +1,7 @@
+import os
+# Force single GPU to avoid NCCL multi-GPU issues
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+
 from unsloth import FastLanguageModel
 import torch
 import torch.nn.functional as F
@@ -10,9 +14,9 @@ import copy
 from dimension_tracker import track_layer_dimensions
 
 # CUDA_VISIBLE_DEVICES=0 python Unsloth.py
-T_w = 1000000
+T_w = 10
 r = 0.8
-M = 1000000
+M = 0
 layer_idx = [20]
 
 # =============================================================
@@ -215,7 +219,7 @@ os.environ['UNSLOTH_RETURN_LOGITS'] = '1'
 # Start training
 trainer.train()
 
-save_compressed_model(my_model, tokenizer, "saved_models/Compressed_layer10")
+save_compressed_model(my_model, tokenizer, "saved_models/Compressed_layer20")
 
 # Example usage
 inference_engine = InferenceEngine(my_model, tokenizer)

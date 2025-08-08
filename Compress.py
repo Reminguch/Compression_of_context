@@ -133,8 +133,8 @@ class CompressedDecoderLayer(GradientCheckpointingLayer):
         else:
             hidden_states = self.input_layernorm(hidden_states)
 
-        # Self Attention - now returns only attn_output
-        attn_output = self.self_attn(
+        # Self Attention - now returns attn_output and compressed residuals
+        attn_output, compressed_residual = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=compressed_attention_mask or attention_mask,  # Use compressed mask if available
             position_ids=position_ids,
@@ -146,8 +146,8 @@ class CompressedDecoderLayer(GradientCheckpointingLayer):
             **kwargs,
         )
         
-        # Add residual connection
-        hidden_states = residual + attn_output
+        # Add residual connection with properly sized tensors
+        hidden_states = compressed_residual + attn_output
         
         # Set default values for optional outputs since CompressedAttention now only returns attn_output
         self_attn_weights = None
@@ -624,7 +624,8 @@ class CompressedAttention(nn.Module):
         else:
             output_attention_mask = None
             
-        return attn_output
+        # Return both attn_output and compressed residuals for proper residual connection
+        return attn_output, residuals
 
 class NoLoRALinear(nn.Linear):
     """A Linear layer that prevents LoRA adaptation by overriding __getattr__"""

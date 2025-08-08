@@ -64,6 +64,11 @@ class WindowedLossSFTTrainer(SFTTrainer):
             # Performance tweaks
             dataloader_pin_memory=True,
             dataloader_num_workers=1,
+            # Force single GPU training to avoid NCCL issues
+            dataloader_drop_last=True,
+            ddp_find_unused_parameters=False,
+            # Explicitly disable distributed training
+            local_rank=-1,
         )
 
         # Initialise the parent class with the newly built arguments

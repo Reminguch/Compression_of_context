@@ -10,8 +10,7 @@ from typing import Dict
 import copy
 from dimension_tracker import track_layer_dimensions
 
-# CUDA_VISIBLE_DEVICES=0 /bin/python3.10 /home/ilya/context_compression/Unsloth.py
-
+# CUDA_VISIBLE_DEVICES=0 python Unsloth.py
 T_w = 1000000
 r = 0.8
 M = 1000000
@@ -310,131 +309,131 @@ print("=" * 50)
 
 #
 
-# Test 2: Try a simpler prompt format
-print("\nTest 2: Simple direct prompt...")
-simple_text = "Solve (x + 2)^2 = 0. Show your work step by step."
-simple_inputs = inference_engine.tokenizer(simple_text, return_tensors="pt").to("cuda")
-try:
-    simple_output = inference_engine.model.generate(
-        **simple_inputs,
-        max_new_tokens=256,
-        temperature=0.7,  # Higher temperature for better sampling
-        do_sample=True,
-        pad_token_id=inference_engine.tokenizer.eos_token_id,
-        use_cache=False,  # Disable cache for compressed models
-        repetition_penalty=1.2,  # Prevent repetition
-        no_repeat_ngram_size=3,  # Prevent 3-gram repetition
-        top_p=0.9,
-        top_k=50,
-        early_stopping=True,
-        past_key_values=None  # Explicitly set to None to avoid unsloth issues
-    )
-    simple_result = inference_engine.tokenizer.decode(simple_output[0], skip_special_tokens=True)
-    print("Simple prompt result:")
-    print(simple_result)
-except Exception as e:
-    print(f"Direct model generation failed: {e}")
-    print("Using InferenceEngine instead...")
-    simple_messages = [{"role": "user", "content": simple_text}]
-    simple_result = inference_engine.generate_response(
-        messages=simple_messages,
-        max_new_tokens=256,
-        temperature=0.1,
-        stream=False
-    )
-    print("Simple prompt result (via InferenceEngine):")
-    print(simple_result)
-test_outputs.append(("Test 2", simple_result))
-print("=" * 50)
+# # Test 2: Try a simpler prompt format
+# print("\nTest 2: Simple direct prompt...")
+# simple_text = "Solve (x + 2)^2 = 0. Show your work step by step."
+# simple_inputs = inference_engine.tokenizer(simple_text, return_tensors="pt").to("cuda")
+# try:
+#     simple_output = inference_engine.model.generate(
+#         **simple_inputs,
+#         max_new_tokens=256,
+#         temperature=0.7,  # Higher temperature for better sampling
+#         do_sample=True,
+#         pad_token_id=inference_engine.tokenizer.eos_token_id,
+#         use_cache=False,  # Disable cache for compressed models
+#         repetition_penalty=1.2,  # Prevent repetition
+#         no_repeat_ngram_size=3,  # Prevent 3-gram repetition
+#         top_p=0.9,
+#         top_k=50,
+#         early_stopping=True,
+#         past_key_values=None  # Explicitly set to None to avoid unsloth issues
+#     )
+#     simple_result = inference_engine.tokenizer.decode(simple_output[0], skip_special_tokens=True)
+#     print("Simple prompt result:")
+#     print(simple_result)
+# except Exception as e:
+#     print(f"Direct model generation failed: {e}")
+#     print("Using InferenceEngine instead...")
+#     simple_messages = [{"role": "user", "content": simple_text}]
+#     simple_result = inference_engine.generate_response(
+#         messages=simple_messages,
+#         max_new_tokens=256,
+#         temperature=0.1,
+#         stream=False
+#     )
+#     print("Simple prompt result (via InferenceEngine):")
+#     print(simple_result)
+# test_outputs.append(("Test 2", simple_result))
+# print("=" * 50)
 
-# Test 3: Manual chat format without thinking
-print("\nTest 3: Manual chat format...")
-manual_text = "user\nSolve (x + 2)^2 = 0.\nassistant\n"
-manual_inputs = inference_engine.tokenizer(manual_text, return_tensors="pt").to("cuda")
-try:
-    manual_output = inference_engine.model.generate(
-        **manual_inputs,
-        max_new_tokens=256,
-        temperature=0.7,  # Higher temperature for better sampling
-        do_sample=True,
-        pad_token_id=inference_engine.tokenizer.eos_token_id,
-        use_cache=False,  # Disable cache for compressed models
-        repetition_penalty=1.2,  # Prevent repetition
-        no_repeat_ngram_size=3,  # Prevent 3-gram repetition
-        top_p=0.9,
-        top_k=50,
-        early_stopping=True,
-        past_key_values=None  # Explicitly set to None to avoid unsloth issues
-    )
-    manual_result = inference_engine.tokenizer.decode(manual_output[0], skip_special_tokens=True)
-    print("Manual format result:")
-    print(manual_result)
-except Exception as e:
-    print(f"Direct model generation failed: {e}")
-    print("Using InferenceEngine instead...")
-    manual_messages = [{"role": "user", "content": "Solve (x + 2)^2 = 0."}]
-    manual_result = inference_engine.generate_response(
-        messages=manual_messages,
-        max_new_tokens=256,
-        temperature=0.1,
-        stream=False
-    )
-    print("Manual format result (via InferenceEngine):")
-    print(manual_result)
-test_outputs.append(("Test 3", manual_result))
-print("=" * 50)
+# # Test 3: Manual chat format without thinking
+# print("\nTest 3: Manual chat format...")
+# manual_text = "user\nSolve (x + 2)^2 = 0.\nassistant\n"
+# manual_inputs = inference_engine.tokenizer(manual_text, return_tensors="pt").to("cuda")
+# try:
+#     manual_output = inference_engine.model.generate(
+#         **manual_inputs,
+#         max_new_tokens=256,
+#         temperature=0.7,  # Higher temperature for better sampling
+#         do_sample=True,
+#         pad_token_id=inference_engine.tokenizer.eos_token_id,
+#         use_cache=False,  # Disable cache for compressed models
+#         repetition_penalty=1.2,  # Prevent repetition
+#         no_repeat_ngram_size=3,  # Prevent 3-gram repetition
+#         top_p=0.9,
+#         top_k=50,
+#         early_stopping=True,
+#         past_key_values=None  # Explicitly set to None to avoid unsloth issues
+#     )
+#     manual_result = inference_engine.tokenizer.decode(manual_output[0], skip_special_tokens=True)
+#     print("Manual format result:")
+#     print(manual_result)
+# except Exception as e:
+#     print(f"Direct model generation failed: {e}")
+#     print("Using InferenceEngine instead...")
+#     manual_messages = [{"role": "user", "content": "Solve (x + 2)^2 = 0."}]
+#     manual_result = inference_engine.generate_response(
+#         messages=manual_messages,
+#         max_new_tokens=256,
+#         temperature=0.1,
+#         stream=False
+#     )
+#     print("Manual format result (via InferenceEngine):")
+#     print(manual_result)
+# test_outputs.append(("Test 3", manual_result))
+# print("=" * 50)
 
-# Test 4: Check what the chat template actually produces
-print("\nTest 4: Debug chat template...")
-template_result = inference_engine.tokenizer.apply_chat_template(
-    messages,
-    tokenize=False,
-    add_generation_prompt=True
-)
-print("Chat template output:")
-print(repr(template_result))
-test_outputs.append(("Test 4 (Chat Template)", template_result))
-print("=" * 50)
+# # Test 4: Check what the chat template actually produces
+# print("\nTest 4: Debug chat template...")
+# template_result = inference_engine.tokenizer.apply_chat_template(
+#     messages,
+#     tokenize=False,
+#     add_generation_prompt=True
+# )
+# print("Chat template output:")
+# print(repr(template_result))
+# test_outputs.append(("Test 4 (Chat Template)", template_result))
+# print("=" * 50)
 
-# Test 5: Test streaming with thinking disabled (anti-cutoff parameters)
-print("\nTest 5: Streaming with thinking disabled...")
-result_stream = inference_engine.generate_response(
-    messages=messages,
-    max_new_tokens=200,
-    temperature=0.8,     # Higher temperature
-    top_p=0.95,          # Higher top_p
-    top_k=50,
-    enable_thinking=False,
-    stream=True
-)
-print(f"\nStream result: {result_stream}")
-test_outputs.append(("Test 5 (Stream)", str(result_stream)))
-print("=" * 50)
+# # Test 5: Test streaming with thinking disabled (anti-cutoff parameters)
+# print("\nTest 5: Streaming with thinking disabled...")
+# result_stream = inference_engine.generate_response(
+#     messages=messages,
+#     max_new_tokens=200,
+#     temperature=0.8,     # Higher temperature
+#     top_p=0.95,          # Higher top_p
+#     top_k=50,
+#     enable_thinking=False,
+#     stream=True
+# )
+# print(f"\nStream result: {result_stream}")
+# test_outputs.append(("Test 5 (Stream)", str(result_stream)))
+# print("=" * 50)
 
-# Test 6: Simple generation method with conservative parameters
-print("\nTest 6: Simple generation method...")
-simple_result = inference_engine.generate_response(
-    messages=messages,
-    max_new_tokens=128,
-    temperature=0.1,
-    enable_thinking=False,
-    stream=False
-)
-test_outputs.append(("Test 6", simple_result))
-print("Simple generation result:")
-print(simple_result)
-print("=" * 50)
+# # Test 6: Simple generation method with conservative parameters
+# print("\nTest 6: Simple generation method...")
+# simple_result = inference_engine.generate_response(
+#     messages=messages,
+#     max_new_tokens=128,
+#     temperature=0.1,
+#     enable_thinking=False,
+#     stream=False
+# )
+# test_outputs.append(("Test 6", simple_result))
+# print("Simple generation result:")
+# print(simple_result)
+# print("=" * 50)
 
-"""
-After all tests are done, write the collected outputs to a file for later inspection.
-"""
+# """
+# After all tests are done, write the collected outputs to a file for later inspection.
+# """
 
-# Write all collected test outputs to a dedicated log file
-log_path = os.path.join(os.path.dirname(__file__), "test_outputs.txt")
-with open(log_path, "w", encoding="utf-8") as f:
-    for header, content in test_outputs:
-        f.write(f"######## {header} ########\n")
-        f.write(str(content))
-        f.write("\n\n")
+# # Write all collected test outputs to a dedicated log file
+# log_path = os.path.join(os.path.dirname(__file__), "test_outputs.txt")
+# with open(log_path, "w", encoding="utf-8") as f:
+#     for header, content in test_outputs:
+#         f.write(f"######## {header} ########\n")
+#         f.write(str(content))
+#         f.write("\n\n")
 
-print(f"Saved detailed test outputs to {log_path}")
+# print(f"Saved detailed test outputs to {log_path}")

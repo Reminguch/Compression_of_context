@@ -133,7 +133,7 @@ class CompressedDecoderLayer(GradientCheckpointingLayer):
         else:
             hidden_states = self.input_layernorm(hidden_states)
 
-        # Self Attention - handle the 5-tuple return from CompressedAttention
+        # Self Attention - now returns only attn_output
         attn_output = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=compressed_attention_mask or attention_mask,  # Use compressed mask if available
@@ -146,11 +146,12 @@ class CompressedDecoderLayer(GradientCheckpointingLayer):
             **kwargs,
         )
         
-        # Unpack the 5-tuple from CompressedAttention
-        residual_from_attn, hidden_states, self_attn_weights, present_key_value, new_compressed_attention_mask = attn_output
+        # Add residual connection
+        hidden_states = residual + attn_output
         
-        # Add residuals (both should be in original_dtype from CompressedAttention)
-        hidden_states = residual_from_attn + hidden_states
+        # Set default values for optional outputs since CompressedAttention now only returns attn_output
+        self_attn_weights = None
+        present_key_value = None
 
         # Fully Connected
         residual = hidden_states
@@ -178,13 +179,10 @@ class CompressedDecoderLayer(GradientCheckpointingLayer):
                 outputs += (self_attn_weights,)
             if use_cache:
                 outputs += (present_key_value,)
-            # Include the compressed attention mask for the next layer (may be None if compression disabled)
-            outputs += (new_compressed_attention_mask,)
             return outputs
         else:
-            # Return both hidden states and compressed attention mask for next layer
-            # Always return the compressed attention mask to maintain sequence length consistency
-            return hidden_states, new_compressed_attention_mask
+            # Return only hidden states
+            return hidden_states
 
 
 class CompressedAttention(nn.Module):
@@ -305,7 +303,7 @@ class CompressedAttention(nn.Module):
         cache_position: Optional[torch.Tensor] = None,
         position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
         **kwargs: Unpack[FlashAttentionKwargs],
-    ) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[tuple[torch.Tensor]], Optional[torch.Tensor]]:
+    ) -> torch.Tensor:
 
         
         # Store original dtype and establish working dtype
@@ -536,7 +534,7 @@ class CompressedAttention(nn.Module):
         else:
             output_attention_mask = None
             
-        return residuals, attn_output, attn_weights, None, output_attention_mask  # Return 5-tuple with compressed attention mask ????
+        return attn_output
 
 class NoLoRALinear(nn.Linear):
     """A Linear layer that prevents LoRA adaptation by overriding __getattr__"""

@@ -16,7 +16,7 @@ import os
 import traceback  # For detailed exception traces
 
 # Environment variable to control debug output
-DEBUG_FLEX_ATTENTION = os.getenv('DEBUG_FLEX_ATTENTION', '1') == '1'
+DEBUG_FLEX_ATTENTION = os.getenv('DEBUG_FLEX_ATTENTION', '0') == '1'
 
 # FlexAttention import
 try:
@@ -172,7 +172,7 @@ class CompressedDecoderLayer(GradientCheckpointingLayer):
         
         hidden_states = residual + hidden_states
 
-        # Return format compatible with unsloth: return tensor when single output, tuple for multiple
+        # Return format compatible with upstream models: always return a tuple with hidden_states first
         if output_attentions or use_cache:
             outputs = (hidden_states,)
             if output_attentions:
@@ -181,8 +181,8 @@ class CompressedDecoderLayer(GradientCheckpointingLayer):
                 outputs += (present_key_value,)
             return outputs
         else:
-            # Return only hidden states
-            return hidden_states
+            # Return only hidden states, wrapped in a tuple for compatibility
+            return (hidden_states,)
 
 
 class CompressedAttention(nn.Module):
@@ -314,6 +314,11 @@ class CompressedAttention(nn.Module):
         if hidden_states.dtype != working_dtype:
             hidden_states = hidden_states.to(dtype=working_dtype)
         
+        # Ensure a batch dimension exists before any further processing
+        # Expected shape is [batch, seq_len, hidden_size]
+        if hidden_states.dim() == 2:
+            hidden_states = hidden_states.unsqueeze(0)
+
         ### Compression of memory part ###
         if self.enable_compression:
             x_m, xm_cmp, x_w = self.compress_memory(hidden_states, self.T_w, self.r, self.M)
@@ -370,99 +375,39 @@ class CompressedAttention(nn.Module):
             # Skip compression - use original hidden states directly
             residuals = hidden_states
         
+        # Ensure hidden_states has [batch, seq_len, hidden_size] shape
+        if hidden_states.dim() == 2:
+            hidden_states = hidden_states.unsqueeze(0)
+
         # Update shapes after compression
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
-        query_states = self.q_norm(self.q_proj(hidden_states).view(hidden_shape))
-        key_states = self.k_norm(self.k_proj(hidden_states).view(hidden_shape))
-        value_states = self.v_proj(hidden_states).view(hidden_shape)
-        
+        # Project to Q, K, V and arrange as [batch, heads, seq_len, head_dim]
+        query_states = self.q_norm(self.q_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
+        key_states = self.k_norm(self.k_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
+        value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
 
-        # Ensure tensors maintain their batch dimension and are properly shaped
-        # Handle both training (batch dim lost) and cold pass/inference scenarios
-        batch_size = hidden_states.shape[0] if hidden_states.dim() > 1 else 1
-        
-        # Helper function to ensure consistent batch dimensions
-        def ensure_batch_dim(tensor, target_batch_size):
-            if tensor.dim() == 2:
-                # Lost batch dimension during training
-                return tensor.unsqueeze(0)
-            elif tensor.dim() == 3 and tensor.shape[0] != target_batch_size:
-                # Cold pass scenario: tensor lost batch dim but others didn't
-                return tensor.unsqueeze(0)
-            elif tensor.dim() == 3 and target_batch_size == 1:
-                # Training scenario: tensor is [seq_len, heads, head_dim] but should be [1, seq_len, heads, head_dim]
-                return tensor.unsqueeze(0)
-            return tensor
-        
-        # Ensure all tensors have consistent batch dimensions
-        hidden_states = ensure_batch_dim(hidden_states, batch_size)
-        query_states = ensure_batch_dim(query_states, batch_size)
-        key_states = ensure_batch_dim(key_states, batch_size)
-        value_states = ensure_batch_dim(value_states, batch_size)
-        
-        # Update input_shape if batch dimension was added
-        if hidden_states.shape[0] != batch_size:
-            input_shape = hidden_states.shape[:-1]
-        
-        # Create position embeddings for the compressed sequence AFTER batch dimension restoration
+        # Create position embeddings for the compressed sequence
         seq_len_current = hidden_states.shape[1]
-        
         if DEBUG_FLEX_ATTENTION:
-            print(f"Creating position embeddings:")
+            print("Creating position embeddings:")
             print(f"  hidden_states shape: {hidden_states.shape}")
             print(f"  seq_len_current: {seq_len_current}")
-        
         position_ids = torch.arange(seq_len_current, device=hidden_states.device).unsqueeze(0)
-        position_embeddings = create_position_embeddings_custom(seq_len_current, self.head_dim, hidden_states.device, working_dtype)
-        cos, sin = position_embeddings
-        
+        cos, sin = create_position_embeddings_custom(seq_len_current, self.head_dim, hidden_states.device, working_dtype)
         if DEBUG_FLEX_ATTENTION:
             print(f"Position embeddings created for seq_len={seq_len_current}")
             print(f"cos shape: {cos.shape}, sin shape: {sin.shape}")
-        
-        # Debug information for both training and cold pass scenarios
+
+        # Apply RoPE directly on [batch, heads, seq_len, head_dim]
         if DEBUG_FLEX_ATTENTION:
-            print(f"Batch size: {batch_size}")
-            print(f"hidden_states shape: {hidden_states.shape}")
-            print(f"query_states shape: {query_states.shape}")
-            print(f"key_states shape: {key_states.shape}")
-            print(f"cos shape: {cos.shape}")
-            print(f"sin shape: {sin.shape}")
-            print(f"seq_len_current: {seq_len_current}")
-        
-        # Transpose for RoPE application: [batch, seq_len, heads, head_dim] -> [batch, heads, seq_len, head_dim]
-        query_states_rope = query_states.transpose(1, 2)
-        key_states_rope = key_states.transpose(1, 2)
-        
-        if DEBUG_FLEX_ATTENTION:
-            print(f"Before RoPE application:")
-            print(f"  query_states_rope: {query_states_rope.shape}")
-            print(f"  key_states_rope: {key_states_rope.shape}")
+            print("Before RoPE application:")
+            print(f"  query_states: {query_states.shape}")
+            print(f"  key_states: {key_states.shape}")
             print(f"  cos: {cos.shape}")
             print(f"  sin: {sin.shape}")
-        
-        # Apply RoPE with correct tensor shapes
-        # Ensure position embeddings match the expected sequence length
-        expected_seq_len = query_states_rope.shape[2]  # seq_len dimension after transpose
-        if cos.shape[1] != expected_seq_len:
-            if DEBUG_FLEX_ATTENTION:
-                print(f"WARNING: Position embeddings mismatch!")
-                print(f"  Expected seq_len: {expected_seq_len}")
-                print(f"  cos shape: {cos.shape}")
-                print(f"  sin shape: {sin.shape}")
-            # Recreate position embeddings with correct sequence length
-            position_embeddings = create_position_embeddings_custom(expected_seq_len, self.head_dim, hidden_states.device, working_dtype)
-            cos, sin = position_embeddings
-            if DEBUG_FLEX_ATTENTION:
-                print(f"  Recreated cos shape: {cos.shape}, sin shape: {sin.shape}")
-        
-        query_states_rope, key_states_rope = apply_rotary_pos_emb(query_states_rope, key_states_rope, cos, sin)
-        
-        # Transpose back for attention computation: [batch, heads, seq_len, head_dim] -> [batch, seq_len, heads, head_dim]
-        query_states = query_states_rope.transpose(1, 2)
-        key_states = key_states_rope.transpose(1, 2)
+        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
     
         
@@ -472,9 +417,13 @@ class CompressedAttention(nn.Module):
 
         # Debug prints before attention pass
         if DEBUG_FLEX_ATTENTION:
-            print(f"Before attention - query_states shape: {query_states.shape}")
-            print(f"Before attention - key_states shape: {key_states.shape}")
-            print(f"Before attention - value_states shape: {value_states.shape}")
+            # Convert to [batch, seq_len, heads, head_dim] for logging clarity
+            q_log = query_states.transpose(1, 2)
+            k_log = key_states.transpose(1, 2)
+            v_log = value_states.transpose(1, 2)
+            print(f"Before attention - query_states shape: {q_log.shape}")
+            print(f"Before attention - key_states shape: {k_log.shape}")
+            print(f"Before attention - value_states shape: {v_log.shape}")
             print(f"Expected attention format: [batch, seq_len, heads, head_dim]")
         
         # Try FlexAttention first, fallback to standard attention if it fails
@@ -482,14 +431,13 @@ class CompressedAttention(nn.Module):
         attn_weights = None
         
         if self.use_flex_attention:
-            # Prepare tensors for FlexAttention - already in working_dtype and contiguous
-            # FlexAttention expects [batch, heads, seq_len, head_dim] format (not [batch, seq_len, heads, head_dim])
-            query_states_flex = query_states.transpose(1, 2).contiguous()  # [batch, heads, seq_len, head_dim]
-            key_states_flex = key_states.transpose(1, 2).contiguous()      # [batch, heads, seq_len, head_dim]
-            value_states_flex = value_states.transpose(1, 2).contiguous()  # [batch, heads, seq_len, head_dim]
+            # Prepare tensors for FlexAttention - already [batch, heads, seq_len, head_dim]
+            query_states_flex = query_states.contiguous()
+            key_states_flex = key_states.contiguous()
+            value_states_flex = value_states.contiguous()
             
             if DEBUG_FLEX_ATTENTION:
-                print(f"FlexAttention tensor preparation:")
+                print("FlexAttention tensor preparation:")
                 print(f"  query_states_flex: {query_states_flex.shape} (expected: [batch, heads, seq_len, head_dim])")
                 print(f"  key_states_flex: {key_states_flex.shape} (expected: [batch, heads, seq_len, head_dim])")
                 print(f"  value_states_flex: {value_states_flex.shape} (expected: [batch, heads, seq_len, head_dim])")
@@ -502,9 +450,9 @@ class CompressedAttention(nn.Module):
 
             # --- Attempt 1: FlexAttention with Block Mask ---
             # Get actual sequence lengths from the tensors for block mask creation
-            # After transpose, shape is [batch, heads, seq_len, head_dim], so seq_len is at index 2
-            actual_q_len = query_states_flex.shape[2]  # seq_len dimension
-            actual_kv_len = key_states_flex.shape[2]   # seq_len dimension
+            # Shape is [batch, heads, seq_len, head_dim], so seq_len is at index 2
+            actual_q_len = query_states_flex.shape[2]
+            actual_kv_len = key_states_flex.shape[2]
             
             if DEBUG_FLEX_ATTENTION:
                 print(f"Creating block mask for q_len={actual_q_len}, kv_len={actual_kv_len}")
@@ -522,23 +470,81 @@ class CompressedAttention(nn.Module):
                         print(f"  key_states_flex: {key_states_flex.shape}")
                         print(f"  value_states_flex: {value_states_flex.shape}")
                         print(f"  block_mask shape: {getattr(block_mask, 'shape', 'unknown')}")
-                    
-                    # Force a graph break before calling FlexAttention to prevent nested compilation
-                    import torch as _t
-                    _t._dynamo.graph_break()
+                    # Detect FX tracing (conflicts with torch.compile inside FlexAttention wrapper)
+                    def _is_fx_tracing():
+                        try:
+                            import torch.fx._symbolic_trace as _st
+                            return getattr(_st, 'CURRENT_PATCHER', None) is not None
+                        except Exception:
+                            return False
 
-                    flex_output = flex_attention(
-                        query_states_flex,
-                        key_states_flex,
-                        value_states_flex,
-                        block_mask=block_mask,
-                        enable_gqa=(self.num_key_value_groups > 1),
-                    )
-                    attn_output = flex_output[0] if isinstance(flex_output, tuple) else flex_output
+                    if not _is_fx_tracing():
+                        # Safe to use FlexAttention wrapper
+                        flex_output = flex_attention(
+                            query_states_flex,
+                            key_states_flex,
+                            value_states_flex,
+                            block_mask=block_mask,
+                            enable_gqa=(self.num_key_value_groups > 1),
+                        )
+                        attn_output = flex_output[0] if isinstance(flex_output, tuple) else flex_output
+                    else:
+                        # Manual attention with causal masking (no fallback to SDPA)
+                        bsz, q_heads, q_len, hd = query_states_flex.shape
+                        _, kv_heads, kv_len, _ = key_states_flex.shape
+                        # Expand K/V heads to match Q heads if using GQA
+                        if q_heads != kv_heads and self.num_key_value_groups > 1:
+                            target_heads = kv_heads * self.num_key_value_groups
+                            assert target_heads == q_heads, (
+                                f"GQA head mismatch: q_heads={q_heads}, kv_heads={kv_heads}, groups={self.num_key_value_groups}")
+                            key_states_flex = key_states_flex.unsqueeze(2).expand(
+                                bsz, kv_heads, self.num_key_value_groups, kv_len, hd
+                            ).reshape(bsz, target_heads, kv_len, hd)
+                            value_states_flex = value_states_flex.unsqueeze(2).expand(
+                                bsz, kv_heads, self.num_key_value_groups, kv_len, hd
+                            ).reshape(bsz, target_heads, kv_len, hd)
+                        scores = torch.matmul(query_states_flex, key_states_flex.transpose(-2, -1)) * self.scaling
+                        causal = torch.triu(torch.ones(q_len, kv_len, device=scores.device, dtype=torch.bool), diagonal=1)
+                        scores = scores.masked_fill(causal, float('-inf'))
+                        attn_probs = torch.softmax(scores, dim=-1)
+                        if self.training and self.attention_dropout > 0:
+                            attn_probs = F.dropout(attn_probs, p=self.attention_dropout)
+                        attn_output = torch.matmul(attn_probs, value_states_flex)
                 except Exception as e:
                     debug_print(f"FlexAttention with block mask FAILED: {e}")
                     debug_print(traceback.format_exc())
                     attn_output = None  # Ensure it's None for the next step
+
+                # If wrapper path failed or was skipped, try manual attention (no SDPA)
+                if attn_output is None:
+                    if DEBUG_FLEX_ATTENTION:
+                        print("Falling back to manual causal attention (no SDPA)")
+                    try:
+                        bsz, q_heads, q_len, hd = query_states_flex.shape
+                        _, kv_heads, kv_len, _ = key_states_flex.shape
+                        # Expand K/V heads to match Q heads if using GQA
+                        if q_heads != kv_heads and self.num_key_value_groups > 1:
+                            target_heads = kv_heads * self.num_key_value_groups
+                            if DEBUG_FLEX_ATTENTION:
+                                print(f"Expanding KV heads: kv_heads={kv_heads} -> target_heads={target_heads}, q_heads={q_heads}")
+                            key_states_flex = key_states_flex.unsqueeze(2).expand(
+                                bsz, kv_heads, self.num_key_value_groups, kv_len, hd
+                            ).reshape(bsz, target_heads, kv_len, hd)
+                            value_states_flex = value_states_flex.unsqueeze(2).expand(
+                                bsz, kv_heads, self.num_key_value_groups, kv_len, hd
+                            ).reshape(bsz, target_heads, kv_len, hd)
+                        # Compute attention
+                        scores = torch.matmul(query_states_flex, key_states_flex.transpose(-2, -1)) * self.scaling
+                        causal = torch.triu(torch.ones(q_len, kv_len, device=scores.device, dtype=torch.bool), diagonal=1)
+                        scores = scores.masked_fill(causal, float('-inf'))
+                        attn_probs = torch.softmax(scores, dim=-1)
+                        if self.training and self.attention_dropout > 0:
+                            attn_probs = F.dropout(attn_probs, p=self.attention_dropout)
+                        attn_output = torch.matmul(attn_probs, value_states_flex)
+                    except Exception as e2:
+                        debug_print(f"Manual attention FAILED: {e2}")
+                        debug_print(traceback.format_exc())
+                        attn_output = None
 
             # --- Attempt 2: FlexAttention without Block Mask (if first attempt failed or was skipped) ---
             # if attn_output is None:

@@ -1,4 +1,3 @@
-print(1)
 from unsloth import FastLanguageModel
 import torch
 import torch.nn.functional as F

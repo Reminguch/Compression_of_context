@@ -119,6 +119,8 @@ class CompressedDecoderLayer(GradientCheckpointingLayer):
         compressed_attention_mask: Optional[torch.Tensor] = None,  # New parameter for compressed attention mask from previous layer
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> Union[torch.Tensor, tuple[torch.Tensor, ...]]:
+        # Handle case where hidden_states might be a tuple from previous layer
+        
         # Store original dtype
         original_dtype = hidden_states.dtype
         
@@ -534,7 +536,7 @@ class CompressedAttention(nn.Module):
         else:
             output_attention_mask = None
             
-        return residuals, attn_output, attn_weights, None, output_attention_mask  # Return 5-tuple with compressed attention mask
+        return residuals, attn_output, attn_weights, None, output_attention_mask  # Return 5-tuple with compressed attention mask ????
 
 class NoLoRALinear(nn.Linear):
     """A Linear layer that prevents LoRA adaptation by overriding __getattr__"""

@@ -1,0 +1,13 @@
+{
+  "recommendations": [
+    "ms-toolsai.jupyter",
+    "ms-python.autopep8",
+    "ms-python.black-formatter",
+    "ms-python.isort",
+    "ms-python.vscode-pylance",
+    "ms-python.python",
+    "ms-python.debugpy",
+    "ms-python.vscode-python-envs",
+    "kevinrose.vsc-python-indent"
+  ]
+}

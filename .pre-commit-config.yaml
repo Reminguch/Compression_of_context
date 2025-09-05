@@ -1,0 +1,31 @@
+repos:
+  - repo: https://github.com/psf/black
+    rev: 24.4.2 # Use a specific version for stability
+    hooks:
+      - id: black
+        language_version: python3.11 # Specify the Python version for Black
+
+  - repo: https://github.com/PyCQA/isort
+    rev: 5.13.2 # Use a specific version for stability
+    hooks:
+      - id: isort
+        name: isort (Python)
+        args: ["--profile", "black"] # Use Black profile for compatibility
+
+  - repo: https://github.com/PyCQA/flake8
+    rev: 7.0.0 # Use a specific version for stability
+    hooks:
+      - id: flake8
+        args: ["--max-line-length", "110"] 
+        additional_dependencies: [
+          "flake8-bugbear",
+          "flake8-comprehensions",
+          "flake8-implicit-str-concat"
+        ] # Add desired Flake8 plugins
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.10.0 # Use a specific version for stability
+    hooks:
+      - id: mypy
+        args: [--no-strict-optional, --ignore-missing-imports] # Example MyPy arguments
+        files: ^(your_project_name/|tests/) # Limit MyPy to specific directories

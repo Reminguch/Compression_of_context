@@ -8,6 +8,7 @@ __pycache__/
 venv/
 env/
 ENV/
+.venv/
 
 # Model files and checkpoints
 saved_models/
@@ -38,3 +39,4 @@ Thumbs.db
 *.safetensors
 *.pt
 *.pth
+
